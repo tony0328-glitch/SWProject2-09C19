@@ -1,0 +1,129 @@
+
+#include <Servo.h>
+
+// Arduino pin assignment
+#define PIN_LED   9
+#define PIN_TRIG  12
+#define PIN_ECHO  13
+#define PIN_SERVO 10
+
+// Sonar parameters
+#define SND_VEL 346.0
+#define INTERVAL 25
+#define PULSE_DURATION 10
+
+#define _DIST_MIN 180.0
+#define _DIST_MAX 360.0
+
+#define TIMEOUT ((INTERVAL / 2) * 1000.0)
+#define SCALE (0.001 * 0.5 * SND_VEL)
+
+// EMA filter
+#define _EMA_ALPHA 0.3
+
+// Servo calibration
+#define _DUTY_MIN 550
+#define _DUTY_NEU 1475
+#define _DUTY_MAX 2400
+
+// Global variables
+float dist_ema = _DIST_MIN;
+float dist_prev = _DIST_MIN;
+float dist_raw;
+float dist_filtered;
+
+bool ema_initialized = false;
+unsigned long last_sampling_time = 0;
+
+Servo myservo;
+
+void setup() {
+  pinMode(PIN_LED, OUTPUT);
+  pinMode(PIN_TRIG, OUTPUT);
+  pinMode(PIN_ECHO, INPUT);
+
+  digitalWrite(PIN_LED, HIGH);
+  digitalWrite(PIN_TRIG, LOW);
+
+  myservo.attach(PIN_SERVO);
+  myservo.writeMicroseconds(_DUTY_NEU);
+
+  Serial.begin(57600);
+}
+
+void loop() {
+  if (millis() - last_sampling_time < INTERVAL)
+    return;
+
+  last_sampling_time = millis();
+
+  // Measure distance
+  dist_raw = USS_measure(PIN_TRIG, PIN_ECHO);
+
+  // Range filter and LED control
+  bool in_range = (dist_raw >= _DIST_MIN &&
+                   dist_raw <= _DIST_MAX);
+
+  digitalWrite(PIN_LED, in_range ? LOW : HIGH);
+
+  if (in_range) {
+    dist_filtered = dist_raw;
+    dist_prev = dist_raw;
+  } else {
+    dist_filtered = dist_prev;
+  }
+
+  // EMA filter
+  if (!ema_initialized) {
+    dist_ema = dist_filtered;
+    ema_initialized = true;
+  } else {
+    dist_ema = _EMA_ALPHA * dist_filtered
+             + (1.0 - _EMA_ALPHA) * dist_ema;
+  }
+
+  // Distance to servo angle
+  float angle = (dist_ema - _DIST_MIN)
+              * 180.0 / (_DIST_MAX - _DIST_MIN);
+
+  angle = constrain(angle, 0.0, 180.0);
+
+  // Angle to servo pulse width
+  float pulse;
+
+  if (angle <= 90.0) {
+    pulse = _DUTY_MIN
+          + (angle / 90.0) * (_DUTY_NEU - _DUTY_MIN);
+  } else {
+    pulse = _DUTY_NEU
+          + ((angle - 90.0) / 90.0)
+          * (_DUTY_MAX - _DUTY_NEU);
+  }
+
+  myservo.writeMicroseconds((int)(pulse + 0.5));
+
+  // Serial plotter output
+  Serial.print("Min:");
+  Serial.print(_DIST_MIN);
+
+  Serial.print(",dist:");
+  Serial.print(dist_raw);
+
+  Serial.print(",ema:");
+  Serial.print(dist_ema);
+
+  Serial.print(",Servo:");
+  Serial.print(myservo.read());
+
+  Serial.print(",Max:");
+  Serial.println(_DIST_MAX);
+}
+
+// Ultrasonic sensor measurement
+float USS_measure(int TRIG, int ECHO) {
+  digitalWrite(TRIG, HIGH);
+  delayMicroseconds(PULSE_DURATION);
+  digitalWrite(TRIG, LOW);
+
+  return pulseIn(ECHO, HIGH, TIMEOUT) * SCALE;
+}
